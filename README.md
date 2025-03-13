@@ -8,6 +8,14 @@ This folder holds all files necessary to generate catastrophe losses under numer
 3. Differences in TC intensity based on ENSO (simulated by the Markov chain);
 4. Greater losses from consecutive events in a given area.
 
+## Instructions
+1. Run `Hazard generation.ipynb`
+2. Run `loss_outputs.ipynb`
+3. Optional: In your own python file, import `results.py` and call relevant functions to obtain summary statistics/plots of results.
+
+* After Step 1, the hazard file will be added to the `Hazards` folder.
+* After step 2, loss output files will be added to the `Outputs` folder. 
+
 ## Files
 ### Data
 
@@ -18,11 +26,11 @@ This folder holds all files necessary to generate catastrophe losses under numer
 
 1. `Historical tracks df.ipynb`: Complies TC data into `tracks.csv` in `Data` folder.
 2. `tracks_r_tables.Rmd`: Creates files in `R tables` folder.
-3. `Hazard generation.ipynb`: Synthetic hazard generation for this project; saves it as `haz_aus_300synth.hdf5` in `Hazards` folder. **If `haz_aus_300synth.hdf5` does not appear in the `Hazards` folder then you must run this code first before moving on to the next part.**
+3. `Hazard generation.ipynb`: Synthetic hazard generation for this project; saves it as `haz_aus_300synth.hdf5` in `Hazards` folder.
 
 ### Running simulations
 
-* `CLIMADA_loss_dfs_AUS.ipynb`: notebook that runs the functions in `sim_mel.py`. **Use this notebook to run simulations and save output to `Output` folder.**
+* `loss_outputs.ipynb`: notebook that runs the functions in `sim_mel.py`.
 * `sim_mel.py`: Python script with new CLIMADA assumptions.
 * `results.py`: Python script with functions to show or plot results of interest.
 
