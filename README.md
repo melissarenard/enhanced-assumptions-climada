@@ -12,6 +12,7 @@ This folder holds all files necessary to generate catastrophe losses under numer
 ### Data
 
 * `ENSO.csv`: Data of ENSO phase attributable to each year.
+* `tracks.csv`: Tracks loaded into CLIMADA are saved in this csv with variables of interest for data analysis in R.
 
 ### Setting up assumptions
 
