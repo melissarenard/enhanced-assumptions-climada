@@ -38,7 +38,7 @@ This folder holds all files necessary to generate catastrophe losses under numer
 
 * `TC_data_analysis.Rmd`: R markdown file that conducts data analysis on TCs in the South Indian (SI) and South Pacific (SP) basins. The data analysis helped in setting the assumptions, but the file itself does not directly feed into any part of the loss output generation.
 * `haz_check.ipynb`: Python notebook that analyses CLIMADA's Hazard classes `TCTracks` and `TropCyclone` and their functions within.
-* `TCSurge.ipynb`: Python notebook that analyses CLIMADA's `petals' class `TCSurgeBathtub` for modelling storm surge.
+* `TCSurge.ipynb`: Python notebook that analyses CLIMADA's "petals" class `TCSurgeBathtub` for modelling storm surge.
 
 ## CLIMADA
 **You must first install CLIMADA before using this code (CLIMADA petals not necessary). Instructions on installation are [here](https://climada-python.readthedocs.io/en/stable/guide/install.html).**
