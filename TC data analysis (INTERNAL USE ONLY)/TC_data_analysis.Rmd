@@ -1,0 +1,293 @@
+---
+title: "TC data analysis -- SI and SP basins"
+author: "Melissa Renard"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, warning=FALSE, include=FALSE}
+rm(list = ls())
+
+# ChatGPT used for the below code: required packages
+# Define a list of required packages
+required_packages <- c("tidyverse", "grid", "gridExtra", "corrplot")
+
+# Check if the packages are installed, and if not, install them
+for (pkg in required_packages) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+}
+# Load the packages into the session
+invisible(lapply(required_packages, library, character.only = TRUE))
+
+knitr::opts_chunk$set(echo = TRUE) 
+```
+
+```{r basin-choice}
+# CHOOSE BASIN HERE -- 'SI' OR 'SP'.
+basin_choice <- 'SI'
+  
+if (basin_choice == 'SI'){
+  x_limits <- c(30, 140)
+  x_breaks <- seq(30,140,10)
+  y_limits <- c(-40, 0)
+  y_breaks <- seq(-40,0,10)
+} else if (basin_choice == 'SP'){
+  x_limits <- c(130, 240)
+  x_breaks <- seq(130,240,10)
+  y_limits <- c(-40, 0)
+  y_breaks <- seq(-40,0,10)
+} else {
+  stop("basin_choice must be 'SI' or 'SP'.")
+}
+```
+
+```{r}
+# Load tracks data
+tracks <- read.csv("../Data/tracks.csv", na="") %>% as_tibble %>% 
+  filter(basin == basin_choice)
+
+tracks$category <- tracks$category %>% as.factor
+tracks <- tracks %>% rename('t_day' = 'days_since_1980', 
+                  't_year' = 'years_since_1980', 
+                  'Nt' = 'TC_num') %>%
+  mutate(t_month = lapply(t_year, function(x) x*12) %>% unlist,
+         east170 = lon > 170,
+         east75 = lon > 75,
+         range_sw = max_sw - min_sw,
+         Nt = as.integer(rownames(tracks)))
+
+# TCs in the southern hemisphere occur between November and April. 
+# Need to write a new dataframe for that.
+tracks_1 <- tracks %>% mutate(enso_year = year + (month > 7)) %>%
+  filter(enso_year >= 1981 & enso_year <= 2023)
+```
+
+```{r}
+# Load ENSO data
+enso_phases <- c("Nina", "Neutral", "Nino")
+enso_labels <- c("La Niña", "Neutral", "El Niño")
+
+enso_df <- read.csv('../Data/ENSO.csv', skip=3) %>% as_tibble %>%
+  mutate(enso = factor(enso, levels = enso_phases))
+enso_df_TC <- enso_df %>% filter(year >= 1981 & year <= 2023)
+
+tracks_1 <- tracks_1 %>% left_join(enso_df, by = join_by(enso_year==year))
+
+```
+
+```{r}
+ggplot(tracks_1, aes(x = lon, y = lat, color = enso)) +
+  geom_point(data = subset(tracks_1, enso== 'Neutral'), aes(color = enso), size = 1.5)+
+  geom_point(data = subset(tracks_1, enso!= 'Neutral'), aes(color = enso), size = 1.5) +
+  scale_x_continuous(limits = x_limits, breaks = x_breaks, expand = c(0,1)) +
+  scale_y_continuous(limits = y_limits, breaks = y_breaks, expand=c(0,1)) +
+  labs(
+    title = "Tropical cyclone genesis in the SI basin 1980-2023",
+    x = "Longitude (\u00B0E)",
+    y = "Latitude (\u00B0)",
+    color = "ENSO Phase"
+  ) +
+  coord_equal() +  # Ensure equal scaling of x and y axes
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    panel.border = element_blank(),
+    panel.grid = element_blank(),
+    panel.background = element_blank(),
+    legend.position = 'bottom',
+  ) +
+  scale_color_manual(
+    name = "",
+    breaks = enso_phases,
+    values = c("red", "grey", "blue"),
+    labels = enso_labels
+  )
+```
+
+```{r}
+p1 <- ggplot(tracks, aes(x = year)) +
+  geom_bar() + 
+  theme_classic() + 
+  labs(x = "Year", y ="Count", title = "Number of TCs in SP basin\nby year") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+p2 <- ggplot(tracks_1, aes(x = month)) + 
+  geom_bar() +
+  theme_classic() +
+  labs(x = "Month", y = "Count", title = "Number of TCs in SP basin\nby month") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+p3 <- ggplot(tracks_1, aes(x = category)) + 
+  geom_bar() +
+  theme_classic() +
+  labs(x = "Month", y = "Count", title = "Number of TCs in SP basin\nby Saffir-Simpson category") + 
+  theme(plot.title = element_text(hjust = 0.5))
+
+grid.arrange(p1,p2,p3, ncol=2, nrow=2)
+```
+
+# Frequency
+## Frequency based on ENSO phases
+
+```{r}
+my_lm <- glm(table(tracks_1$enso_year) ~ 1, family = poisson)
+summary(my_lm)
+mu <- my_lm$coefficients[[1]]
+exp(mu)
+```
+
+```{r} 
+my_lm <- glm(table(tracks_1$enso_year) ~ enso_df_TC$enso, family = poisson)
+
+summary(my_lm)
+
+mu <- c(my_lm$coefficients[[1]], 
+        my_lm$coefficients[[1]] + my_lm$coefficients[[2]], 
+        my_lm$coefficients[[1]] + my_lm$coefficients[[3]])
+
+exp(mu)
+```
+Estimated mean frequency of TCs in SI basin in La Niña, neutral and El Niño phases, respectively: `r round(exp(mu),2)`
+
+```{r, fig.width = 3.5, fig.height=4}
+tracks_1 %>% 
+  count(enso) %>% 
+  mutate(fqcy = n/c(9,24,10),
+         sde = summary(my_lm)$coef[,2] %>% as.vector) %>% 
+  ggplot(aes(x = enso, y = fqcy)) + 
+  geom_bar(stat = 'identity', fill = 'grey') + 
+  geom_errorbar(aes(x =enso, ymin = fqcy*exp(1.96*sde), 
+                    ymax = fqcy*exp(-1.96*sde)), width = 0.3, color="blue", 
+                size=0.8)+
+  theme_minimal() + 
+  labs(x = 'ENSO phase', y = 'Average annual frequency') + 
+  scale_x_discrete(
+    labels = enso_labels
+  ) +
+  theme(legend.position = 'None')
+```
+
+# Locations frequency based on ENSO phases
+
+```{r}
+summary(tracks_1$lon)
+summary(tracks_1$lat)
+
+my_lm <- lm(lon ~ enso, data=tracks_1)
+summary(my_lm)
+
+mu <- c(my_lm$coefficients[[1]], 
+        my_lm$coefficients[[1]] + my_lm$coefficients[[2]], 
+        my_lm$coefficients[[1]] + my_lm$coefficients[[3]])
+
+mu
+```
+Estimated mean longitude of TCs in La Niña, neutral and El Niño phases, respectively: `r round(mu,3)`.
+
+This is significant. La Niña means more TCs close to Australia.
+
+```{r}
+if (basin_choice == 'SI'){
+  my_lm <- glm(east75 ~ enso, data=tracks_1, family = binomial)
+} else {
+  my_lm <- glm(east170 ~ enso, data=tracks_1, family = binomial)
+}
+
+summary(my_lm)
+
+mu <- c(my_lm$coefficients[[1]], 
+        my_lm$coefficients[[1]] + my_lm$coefficients[[2]], 
+        my_lm$coefficients[[1]] + my_lm$coefficients[[3]])
+exp(mu)/(1+exp(mu))
+```
+Estimated probability of a TC produced east of $75^\circ$E in La Niña, neutral and El Niño phases, respectively: `r exp(mu)/(1+exp(mu))`
+
+# Intensity
+## Intensity based on ENSO phases
+
+```{r, fig.height = 4, fig.width=3.5}
+my_lm <- glm(max_sw ~ enso, data=tracks_1, family = Gamma(link=log))
+
+summary(my_lm)
+
+mu <- c(my_lm$coefficients[[1]],
+        my_lm$coefficients[[1]] + my_lm$coefficients[[2]],
+        my_lm$coefficients[[1]] + my_lm$coefficients[[3]])
+
+exp(mu)
+sde <- summary(my_lm)$coef[,2] %>% as.vector
+
+tracks_1 %>% 
+  count(enso) %>% 
+  mutate(sev = exp(mu),
+         sde = summary(my_lm)$coef[,2] %>% as.vector) %>% 
+  ggplot(aes(x = enso, y = sev)) + 
+  geom_bar(stat = 'identity', fill = 'grey') + 
+  geom_errorbar(aes(x =enso, ymin = exp(mu - 1.96*sde), 
+                    ymax = exp(mu + 1.96*sde)), width = 0.3, color="blue", 
+                size=0.8)+
+  theme_minimal() + 
+  labs(x = 'ENSO phase', y = 'Intensity (knots)') + 
+  scale_x_discrete(
+    labels = enso_labels
+  ) +
+  theme(legend.position = 'None')
+```
+The estimated mean maximum wind speed of a TC in La Niña, Neutral and El Niño phases are, respectively: `r round(1/mu,2)`.
+
+```{r}
+p1 <- ggplot(data = tracks_1, aes(x = category, y = range_sw)) + 
+  geom_violin(aes(fill = category)) + 
+  labs(title = "Wind speed range by category") + 
+  theme(legend.position = "none")
+
+p2 <- ggplot(data = tracks_1, aes(x = max_sw, y = range_sw)) + 
+  geom_point() + 
+  theme_minimal()
+
+grid.arrange(p1, p2, ncol = 2)
+```
+
+# Track lifetime
+
+```{r}
+my_lm <- glm(lifetime ~ enso, data = tracks_1, family=Gamma(link=log))
+summary(my_lm)
+
+mu <- c(my_lm$coefficients[[1]], 
+        my_lm$coefficients[[1]] + my_lm$coefficients[[2]], 
+        my_lm$coefficients[[1]] + my_lm$coefficients[[3]])
+
+exp(mu)*365
+
+p1 <- ggplot(data = tracks_1, aes(x = lifetime, y = after_stat(density))) + 
+  geom_freqpoly(aes(color= enso), bins=20) + 
+  theme_minimal() + 
+  theme(legend.position = 'bottom') +
+  labs(title = "Track lifetime by ENSO phase") + 
+  scale_color_manual(
+    name = "ENSO phase",
+    labels = enso_labels,
+    values = c("red", "grey50", "blue")
+  )
+
+p2 <- ggplot(data = tracks_1, aes(x = enso, y = lifetime)) + 
+  geom_violin(aes(fill = enso)) + 
+  theme_minimal() +
+  theme(legend.position = "none") + 
+  labs(title = "Track lifetime by ENSO phase") + 
+  scale_fill_manual(
+    name = "ENSO phase",
+    labels = enso_labels,
+    values = c("red", "grey50", "blue")
+  ) +
+  scale_x_discrete(labels = enso_labels)
+
+grid.arrange(p1,p2, ncol = 2)
+```
+
+```{r}
+(cor_table <- cor(tracks_1 %>% select(max_sw, lat, lon, lifetime)))
+corrplot(cor_table, method = "circle")
+```
