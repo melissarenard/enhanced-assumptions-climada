@@ -45,3 +45,12 @@ This folder holds all files necessary to generate catastrophe losses under numer
 ## CLIMADA
 **You must first install CLIMADA before using this code (CLIMADA petals not necessary). Instructions on installation are [here](https://climada-python.readthedocs.io/en/stable/guide/install.html).**
 Documentation on CLIMADA can be found [here](https://climada-python.readthedocs.io/en/stable/index.html). 
+
+After installing, it will require an extra couple of data files to be manually downloaded:
+
+- [gpw_v4_population_count_rev11_2020_30_sec.tif](http://sedac.ciesin.columbia.edu/downloads/data/gpw-v4/gpw-v4-population-count-rev11/gpw-v4-population-count-rev11_2020_30_sec_tif.zip) (Free NASA Earthdata login required),
+
+Others will download automatically as the code is run:
+
+- IBTrACS.ALL.v04r01.nc
+- https://naturalearth.s3.amazonaws.com/10m_physical/ne_10m_coastline.zip
