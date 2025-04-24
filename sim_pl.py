@@ -436,7 +436,7 @@ def get_poisson_parameters(haz: TropCyclone, basins: List[str]) -> np.ndarray[np
     return params
 
 
-def MMNHPP_lambda(t: float, coefs: np.ndarray, south_hemis=False) -> float:
+def nonhomogeneous_poisson_intensity(t: float, coefs: np.ndarray, south_hemis=False) -> float:
     """
     Evaluate intensity function lambda(t) from seasonal model.
 
@@ -483,7 +483,7 @@ def expected_poisson_arrivals(poisson_params: np.ndarray, basins: List[str]) -> 
         south_hemis = basin in ['SI', 'SP']
         for enso_idx, _ in enumerate(ENSO_PHASES):
             coefs = poisson_params[b_idx, enso_idx]
-            lam = integrate.quad(lambda t: MMNHPP_lambda(t, coefs, south_hemis), 0, 1)[0]
+            lam = integrate.quad(lambda t: nonhomogeneous_poisson_intensity(t, coefs, south_hemis), 0, 1)[0]
             mean_yearly_arrivals[b_idx, enso_idx] = lam
     return mean_yearly_arrivals
 
@@ -510,7 +510,7 @@ def maximum_poisson_intensities(params: np.ndarray, basins: List[str]) -> np.nda
         for e_idx in range(3):
             coefs = params[b_idx, e_idx]
             result = optimize.minimize_scalar(
-                lambda t: -MMNHPP_lambda(t, coefs, south_hemis),
+                lambda t: -nonhomogeneous_poisson_intensity(t, coefs, south_hemis),
                 bounds=(0, 1),
                 method='bounded'
             )
@@ -550,7 +550,7 @@ def sample_poisson_arrivals(
             x = np.random.uniform(0, 1)
             y = np.random.uniform(0, max_intensity)
 
-            if y < MMNHPP_lambda(x, coefs, south_hemis):
+            if y < nonhomogeneous_poisson_intensity(x, coefs, south_hemis):
                 samples[i] = x
                 break
     return samples
