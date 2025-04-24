@@ -406,13 +406,20 @@ def sample_synthetic_cyclone_ids(
     return event_ids_flat, index_map
 
 
-def get_poisson_parameters(haz: TropCyclone, basins: List[str]) -> np.ndarray[np.float64]:
+def get_poisson_parameters(haz: TropCyclone, basins: List[str], homogeneous: bool) -> np.ndarray[np.float64]:
     """
     Load MMNHPP parameters and return as array of shape (len(basins), 3, 4).
     """
-    par_df = pd.read_csv("R tables/MMNHPP_par.csv")
+    params = np.zeros((len(basins), 3, 4)) # (basin, enso, param)
+   
+    if homogeneous:
+        haz_basin = np.array(haz.basin)
+        for b, basin in enumerate(basins):
+            lambda_for_basin = haz.frequency[haz_basin == basin].sum()
+            params[b, :, 0] = lambda_for_basin
+        return params
 
-    params = np.zeros((len(basins), 3, 4))  # (basin, enso, param)
+    par_df = pd.read_csv("R tables/MMNHPP_par.csv")
 
     for b, basin in enumerate(basins):
         for e, enso in enumerate(ENSO_PHASES):
@@ -783,9 +790,9 @@ def increased_losses_from_consecutive_cyclones(
 
     return losses_csc.tocsr()
 
-def summarize_sparse_losses(matrix: sp.csr_matrix, sigfigs: int = 4, min_loss = 100) -> list[str]:
+def summarise_large_losses(matrix: sp.csr_matrix, sigfigs: int = 4, min_loss = 1_000) -> list[str]:
     """
-    Summarize non-zero entries in a CSR matrix as strings of the form:
+    Summarise larger entries in a CSR matrix as strings of the form:
     "loc_5:12.34,loc_78:56.78"
     
     Parameters:
@@ -816,7 +823,7 @@ def resample_losses(
     haz: TropCyclone,
     loss_catalogues: Dict[str, sp.csr_matrix],
     loss_catalogue_index: Dict[int, int],
-    fqcy: str,
+    homogeneous: bool,
     n_sim: int,
     n_years: int,
     starting_enso="Nino",
@@ -826,7 +833,7 @@ def resample_losses(
     damage=False,
     batch_size=10_000,
     output_dir="Outputs",
-    save_losses=False,
+    save_losses=True,
     replace=True,
     show_progress=False,
     seed=None,
@@ -835,7 +842,7 @@ def resample_losses(
         np.random.seed(seed)
 
     os.makedirs(output_dir, exist_ok=True)
-    base_filename = f"{fqcy}_{n_sim}_{n_years}_{loc}_{p_loc}_{intensity}_{damage}"
+    base_filename = f"{homogeneous}_{n_sim}_{n_years}_{loc}_{p_loc}_{intensity}_{damage}"
 
     print(f"{base_filename}: 1/5) Simulating ENSO time series", flush=True)
     enso_simulations: np.ndarray[np.uint8] = simulate_enso_time_series(
@@ -844,7 +851,7 @@ def resample_losses(
 
     print(f"{base_filename}: 2/5) Simulating number of cyclones", flush=True)
     basins: List[str] = list(np.sort(np.unique(haz.basin)))
-    poisson_params = get_poisson_parameters(haz, basins)
+    poisson_params = get_poisson_parameters(haz, basins, homogeneous=homogeneous)
     number_of_cyclones: np.ndarray[int] = simulate_number_of_cyclones(
         n_sim, n_years, poisson_params, basins, enso_simulations, show_progress
     )
@@ -920,7 +927,7 @@ def resample_losses(
         batch_year_loss_table["total_loss"] = losses.sum(axis=1)
 
         if save_losses:
-            batch_year_loss_table["losses"] = summarize_sparse_losses(losses)
+            batch_year_loss_table["larger_losses"] = summarise_large_losses(losses)
 
         # Append batch to CSV
         year_loss_table_file = os.path.join(output_dir, f"{base_filename}.csv")
@@ -931,8 +938,8 @@ def resample_losses(
 
     # Convert the CSV to parquet
     df = pd.read_csv(year_loss_table_file)
-    df['year'] = df['year'].astype(np.uint16)
-    df['simulation'] = df['simulation'].astype(np.uint16)
+    df['year'] = df['year'].astype(np.uint32)
+    df['simulation'] = df['simulation'].astype(np.uint32)
     df['event_time'] = df['event_time'].astype(np.float32)
     df['event_id'] = df['event_id'].astype(np.int32)
     df['total_loss'] = df['total_loss'].astype(np.float32)
