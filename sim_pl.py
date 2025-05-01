@@ -819,6 +819,58 @@ def summarise_large_losses(matrix: sp.csr_matrix, sigfigs: int = 4, min_loss = 1
 
     return row_summaries
 
+
+def save_number_of_cyclones(
+    number_of_cyclones: np.ndarray,
+    basins: List[str],
+    n_sim: int,
+    n_years: int,
+    output_dir: str,
+    base_filename: str,
+) -> None:
+    """
+    Save the number of simulated cyclones per simulation, year, and basin to a CSV.
+    This is mostly for debugging purposes.
+    The number of cyclones here will be larger than the number of cyclones in the year loss tables.
+    That is because some cyclones cause no losses, so they are not included in the year loss tables.
+
+    Parameters
+    ----------
+    number_of_cyclones : np.ndarray
+        Cyclone counts with shape (n_sim, n_years, n_basins).
+    basins : List[str]
+        List of basin names (in order corresponding to last axis of number_of_cyclones).
+    n_sim : int
+        Number of simulation runs.
+    n_years : int
+        Number of years in each simulation.
+    output_dir : str
+        Directory to save the CSV file to.
+    base_filename : str
+        Base name for the output file (will append "_cyclone_counts.csv").
+    """
+    n_basins = len(basins)
+    simulations = np.repeat(np.arange(1, n_sim + 1), n_years * n_basins)
+    years = np.tile(np.repeat(np.arange(1, n_years + 1), n_basins), n_sim)
+    basin_column = np.tile(basins, n_sim * n_years)
+    cyclone_counts = number_of_cyclones.reshape(-1)
+
+    cyclone_df = pd.DataFrame({
+        'simulation': simulations,
+        'year': years,
+        'basin': basin_column,
+        'number_of_cyclones': cyclone_counts
+    })
+
+    cyclone_df_wide = cyclone_df.pivot(
+        index=['simulation', 'year'],
+        columns='basin',
+        values='number_of_cyclones'
+    ).reset_index()
+
+    cyclone_df_wide.columns = ['simulation', 'year'] + [f"Number of cyclones ({basin} basin)" for basin in basins]
+    cyclone_df_wide.to_csv(os.path.join(output_dir, f"{base_filename}_cyclone_counts.csv"), index=False)
+
 def resample_losses(
     haz: TropCyclone,
     loss_catalogues: Dict[str, sp.csr_matrix],
@@ -837,6 +889,7 @@ def resample_losses(
     replace=True,
     show_progress=False,
     seed=None,
+    save_poisson_debug=False,
 ) -> str:
     if seed:
         np.random.seed(seed)
@@ -856,6 +909,16 @@ def resample_losses(
         n_sim, n_years, poisson_params, basins, enso_simulations, show_progress
     )
 
+    if save_poisson_debug:
+        save_number_of_cyclones(
+            number_of_cyclones,
+            basins,
+            n_sim,
+            n_years,
+            output_dir,
+            base_filename
+        )
+        
     print(f"{base_filename}: 3/5) Simulating arrival times of cyclones", flush=True)
     arrival_times_flat, arrival_times_index_map = simulate_arrival_times_of_cyclones(
         n_sim,
@@ -920,6 +983,11 @@ def resample_losses(
         else:
             rows = [loss_catalogue_index[eid] for eid in batch_year_loss_table.event_id]
             losses = loss_catalogues["No adjustment"][rows]
+        
+        # Only keep the rows which have a positive loss
+        positive = np.array((losses.sum(axis=1) > 0)).ravel()
+        batch_year_loss_table = batch_year_loss_table.loc[positive, :]
+        losses = losses[positive, :]
 
         if damage:
             losses = increased_losses_from_consecutive_cyclones(batch_year_loss_table, losses)
