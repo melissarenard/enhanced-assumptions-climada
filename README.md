@@ -10,7 +10,7 @@ This folder holds all files necessary to generate catastrophe losses under numer
 
 ## Instructions
 1. Run `Hazard generation.ipynb`
-2. Run `loss_outputs.ipynb`
+2. Run `Generate Year Loss Tables.ipynb`
 3. Optional: In your own python file, import `results.py` and call relevant functions to obtain summary statistics/plots of results.
 
 * After Step 1, the hazard file will be added to the `Hazards` folder.
@@ -30,8 +30,8 @@ This folder holds all files necessary to generate catastrophe losses under numer
 
 ### Running simulations
 
-* `loss_outputs.ipynb`: notebook that runs the functions in `sim_mel.py`.
-* `sim_mel.py`: Python script with new CLIMADA assumptions.
+* `Generate Year Loss Tables.ipynb`: notebook that runs the functions in `adjusted_year_loss_tables.py`.
+* `adjusted_year_loss_tables.py`: Python script with new CLIMADA assumptions.
 * `results.py`: Python script with functions to show or plot results of interest.
 
 *Add new files from Patrick's side here*

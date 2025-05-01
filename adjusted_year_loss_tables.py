@@ -909,7 +909,7 @@ def save_number_of_cyclones(
     cyclone_df_wide.columns = ['simulation', 'year'] + [f"Number of cyclones ({basin} basin)" for basin in basins]
     cyclone_df_wide.to_csv(os.path.join(output_dir, f"{base_filename}_cyclone_counts.csv"), index=False)
 
-def resample_losses(
+def generate_year_loss_tables(
     haz: TropCyclone,
     loss_catalogues: dict[str, sp.csr_matrix],
     loss_catalogue_index: dict[int, int],
