@@ -790,7 +790,7 @@ def increased_losses_from_consecutive_cyclones(
 
     return losses_csc.tocsr()
 
-def summarise_large_losses(matrix: sp.csr_matrix, sigfigs: int = 4, min_loss = 1_000) -> list[str]:
+def summarise_large_losses(matrix: sp.csr_matrix, sigfigs: int = 4, min_loss = 10_000) -> list[str]:
     """
     Summarise larger entries in a CSR matrix as strings of the form:
     "loc_5:12.34,loc_78:56.78"
@@ -885,7 +885,7 @@ def resample_losses(
     damage=False,
     batch_size=10_000,
     output_dir="Outputs",
-    save_losses=True,
+    save_large_losses=True,
     replace=True,
     show_progress=False,
     seed=None,
