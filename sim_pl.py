@@ -10,6 +10,7 @@ from bisect import bisect_right
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
+import geopandas as gpd
 from numba import njit
 from scipy import integrate
 from scipy import optimize
@@ -819,6 +820,43 @@ def summarise_large_losses(matrix: sp.csr_matrix, sigfigs: int = 4, min_loss = 1
 
     return row_summaries
 
+def assign_state_to_exposure(exp_gdf: gpd.GeoDataFrame, state_shapefile_path: str) -> gpd.GeoDataFrame:
+    """
+    Add a 'state' column (based on STE_NAME21) to a GeoDataFrame of exposure points using spatial join.
+
+    Parameters
+    ----------
+    exp_gdf : gpd.GeoDataFrame
+        GeoDataFrame with point geometries and any CRS.
+    state_shapefile_path : str
+        Path to ABS 2021 state boundary shapefile.
+
+    Returns
+    -------
+    gpd.GeoDataFrame
+        Copy of the input GeoDataFrame with an added 'STE_NAME21' column indicating state.
+    """
+    # Load and prepare state polygons
+    state_gdf = gpd.read_file(state_shapefile_path).iloc[:-1]  # Drop "Other Territories"
+    state_gdf = state_gdf.to_crs("EPSG:7844")
+    exp_gdf = exp_gdf.to_crs("EPSG:7844")
+
+    exp_with_state = gpd.sjoin(exp_gdf.to_crs("EPSG:7844"), state_gdf[['STE_NAME21', 'geometry']], how='left', predicate='within')
+
+    # Handle unmatched points using nearest fallback
+    missing = exp_with_state[exp_with_state["STE_NAME21"].isna()].copy()
+    missing = missing.drop(columns=['index_right', 'STE_NAME21'], errors='ignore')
+
+    if not missing.empty:
+        nearest = gpd.sjoin_nearest(
+            missing,
+            state_gdf[['STE_NAME21', 'geometry']],
+            how='left',
+            distance_col='distance'
+        )
+        exp_with_state.update(nearest[['STE_NAME21']])
+
+    return exp_with_state
 
 def save_number_of_cyclones(
     number_of_cyclones: np.ndarray,
@@ -883,6 +921,7 @@ def resample_losses(
     p_loc=0.5,
     intensity=False,
     damage=False,
+    regions: pd.Series = None,
     batch_size=10_000,
     output_dir="Outputs",
     save_large_losses=True,
@@ -954,6 +993,11 @@ def resample_losses(
     start_time = time()
 
     sim_batches = [list(range(i, min(i + batch_size, n_sim))) for i in range(0, n_sim, batch_size)]
+    
+    if regions is not None:
+        # Map regions to column indices
+        region_names = sorted(regions.unique())
+        region_col_map = {region: np.where(regions.values == region)[0] for region in region_names}
 
     for batch_num, sim_indices in enumerate(tqdm(sim_batches, desc=f"{base_filename}: Calculate losses of resampled hazards", disable=not show_progress)):
 
@@ -994,7 +1038,14 @@ def resample_losses(
 
         batch_year_loss_table["total_loss"] = losses.sum(axis=1)
 
-        if save_losses:
+        if regions is not None:
+            # Sum loss by region and insert as new columns
+            for region in region_names:
+                cols = region_col_map[region]
+                region_loss = losses[:, cols].sum(axis=1).A1  # Convert to 1D array
+                batch_year_loss_table[f"{region.lower().split(" ").join("_")}_loss"] = region_loss
+
+        if save_large_losses:
             batch_year_loss_table["larger_losses"] = summarise_large_losses(losses)
 
         # Append batch to CSV
