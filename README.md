@@ -35,8 +35,6 @@ This folder holds all files necessary to generate catastrophe losses under numer
 * `Analyse YLTs.ipnb`: notebook that generates plots and tables from the previously generated YLTs.
 * `natcat_analysis.py`: Python script with functions to show or plot results of interest.
 
-*Add new files from Patrick's side here*
-
 ### TC data analysis (internal use only)
 
 * `TC_data_analysis.Rmd`: R markdown file that conducts data analysis on TCs in the South Indian (SI) and South Pacific (SP) basins. The data analysis helped in setting the assumptions, but the file itself does not directly feed into any part of the loss output generation.
@@ -46,3 +44,14 @@ This folder holds all files necessary to generate catastrophe losses under numer
 ## CLIMADA
 **You must first install CLIMADA before using this code (CLIMADA petals not necessary). Instructions on installation are [here](https://climada-python.readthedocs.io/en/stable/guide/install.html).**
 Documentation on CLIMADA can be found [here](https://climada-python.readthedocs.io/en/stable/index.html). 
+
+After installing, it will require an extra couple of data files to be manually downloaded:
+
+- [gpw_v4_population_count_rev11_2020_30_sec.tif](http://sedac.ciesin.columbia.edu/downloads/data/gpw-v4/gpw-v4-population-count-rev11/gpw-v4-population-count-rev11_2020_30_sec_tif.zip) (Free NASA Earthdata login required),
+- The Australian [States and Territories - 2021 - Shapefile](https://www.abs.gov.au/statistics/standards/australian-statistical-geography-standard-asgs-edition-3/jul2021-jun2026/access-and-downloads/digital-boundary-files/STE_2021_AUST_SHP_GDA2020.zip)
+
+Other files will download automatically the first time the code is run.
+In case they change versions in the future, we take note of them here:
+
+- IBTrACS.ALL.v04r01.nc
+- https://naturalearth.s3.amazonaws.com/10m_physical/ne_10m_coastline.zip
