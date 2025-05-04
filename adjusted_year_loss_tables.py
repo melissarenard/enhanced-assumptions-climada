@@ -13,7 +13,6 @@ import pandas as pd
 import scipy.sparse as sp
 import geopandas as gpd
 
-from numba import njit
 from scipy import integrate
 from scipy import optimize
 from tqdm import trange, tqdm
@@ -702,95 +701,6 @@ def create_year_loss_table_for_batch(
     df = pd.DataFrame.from_records(records)
     return df.sort_values(["simulation", "year", "event_time"]).reset_index(drop=True)
 
-
-@njit
-def apply_decay_jit_csc_inplace(
-    indptr: npt.NDArray,
-    indices: npt.NDArray,
-    data: npt.NDArray,
-    simulation: npt.NDArray,
-    event_time: npt.NDArray,
-):
-    """
-    JIT-compiled core: applies in-place time-decay compounding to CSC matrix data,
-    using simulation boundaries and event time.
-
-    Parameters
-    ----------
-    indptr
-        CSC indptr array (column start/end indices).
-    indices
-        CSC row indices for non-zero entries.
-    data
-        CSC data array (will be modified in place).
-    simulation
-        Simulation index per row (must align with matrix rows).
-    event_time
-        Event time per row (must align with matrix rows).
-    """
-    n_cols = len(indptr) - 1
-
-    for col in range(n_cols):
-        start = indptr[col]
-        end = indptr[col + 1]
-
-        last_sim = -1
-        last_time = -1.0
-
-        for i in range(start, end):
-            row_idx = indices[i]
-            sim = simulation[row_idx]
-            time = event_time[row_idx]
-
-            if sim != last_sim:
-                last_sim = sim
-                last_time = time
-                continue
-
-            tau = time - last_time
-            if 0 <= tau < 1:
-                theta = np.exp(-5 * tau)
-                data[i] *= 1 + theta
-
-            last_time = time
-
-def increased_losses_from_consecutive_cyclones(
-    batch_year_loss_table: pd.DataFrame,
-    losses: sp.csr_matrix,
-) -> sp.csr_matrix:
-    """
-    Efficiently apply time-decay compounding to losses using CSC format.
-    Adjusts values in-place for each column (grid cell), based on simulation
-    and event time of prior positive-loss events.
-
-    Parameters
-    ----------
-    batch_year_loss_table
-        Must contain 'simulation' and 'event_time', sorted accordingly.
-    losses
-        Sparse matrix of shape (n_events, n_locations).
-
-    Returns
-    -------
-    sp.csr_matrix
-        Adjusted sparse loss matrix.
-    """
-    # Convert to CSC for column-wise iteration
-    losses_csc = losses.tocsc().copy()
-
-    simulation = batch_year_loss_table["simulation"].to_numpy().astype(np.int32)
-    event_time = batch_year_loss_table["event_time"].to_numpy().astype(np.float32)
-
-    apply_decay_jit_csc_inplace(
-        losses_csc.indptr,
-        losses_csc.indices,
-        losses_csc.data,
-        simulation,
-        event_time,
-    )
-
-    return losses_csc.tocsr()
-
 def summarise_large_losses(matrix: sp.csr_matrix, sigfigs: int = 4, min_loss = 10_000) -> list[str]:
     """
     Summarise larger entries in a CSR matrix as strings of the form:
@@ -909,6 +819,88 @@ def save_number_of_cyclones(
     cyclone_df_wide.columns = ['simulation', 'year'] + [f"Number of cyclones ({basin} basin)" for basin in basins]
     cyclone_df_wide.to_csv(os.path.join(output_dir, f"{base_filename}_cyclone_counts.csv"), index=False)
 
+def boost_losses_sliding_window(
+    batch_df: pd.DataFrame,
+    losses: sp.csr_matrix,
+    region_names: list[str],
+    region_col_map: dict[str, np.ndarray],
+    region_thresholds: dict[str, float],
+    compound_factor: float,
+    debug: bool = False,
+) -> tuple[sp.csr_matrix, dict[str, np.ndarray]]:
+    """
+    Computes raw per-region losses internally, then does the sliding-window compounding.
+    Returns the boosted loss matrix, plus debug arrays if requested.
+    """
+    # 1) sort events
+    batch_df = batch_df.reset_index(drop=True)
+    order = batch_df.sort_values(['simulation','event_time']).index.to_numpy()
+    inv_order = np.empty_like(order); inv_order[order] = np.arange(len(order))
+    times = batch_df.loc[order, 'event_time'].to_numpy()
+    sims  = batch_df.loc[order, 'simulation'].to_numpy()
+    n     = len(order)
+
+    # 2) compute raw per-region losses from the sparse matrix
+    raw_vals = {}
+    for r in region_names:
+        cols = region_col_map[r]
+        arr = losses[:, cols].sum(axis=1).A1   # shape (n_events,)
+        raw_vals[r] = arr[order]              # align to sorted order
+
+    # 3) prepare CSC copy
+    csc = losses.tocsc(copy=True)
+
+    # 4) allocate state + debug
+    window_sums = {r: 0.0 for r in region_names}
+    boost_mult  = {r: np.ones(n, dtype=float) for r in region_names}
+    prev_vals   = {r: np.zeros(n, dtype=float) for r in region_names}
+
+    # 5) sliding window per simulation
+    for sim in np.unique(sims):
+        idxs = np.where(sims == sim)[0]
+        head = 0
+        for r in region_names:
+            window_sums[r] = 0.0
+
+        for i_local, tail in enumerate(idxs):
+            t = times[tail]
+            # evict anything < t-1
+            while head < i_local and times[idxs[head]] < t - 1.0:
+                ev = idxs[head]
+                for r in region_names:
+                    window_sums[r] -= boost_mult[r][ev] * raw_vals[r][head]
+                head += 1
+
+            # record & decide boost
+            for r in region_names:
+                prev_vals[r][tail] = window_sums[r]
+                if window_sums[r] > region_thresholds[r]:
+                    boost_mult[r][tail] = compound_factor
+
+            # add this event’s FINAL loss
+            for r in region_names:
+                window_sums[r] += boost_mult[r][tail] * raw_vals[r][tail]
+
+    # 6) apply boost to the CSC matrix
+    for r in region_names:
+        mult = boost_mult[r][inv_order]
+        for col in region_col_map[r]:
+            start,end = csc.indptr[col], csc.indptr[col+1]
+            for ptr in range(start,end):
+                row = int(csc.indices[ptr])
+                csc.data[ptr] *= mult[row]
+
+    # 7) debug info
+    debug_info = {}
+    if debug:
+        for r in region_names:
+            key = r.lower().replace(' ','_')
+            debug_info[f"{key}_raw_loss"]      = raw_vals[r][inv_order]
+            debug_info[f"{key}_prev_win_loss"] = prev_vals[r][inv_order]
+            debug_info[f"{key}_boosted"]       = (boost_mult[r][inv_order] != 1.0).astype(int)
+
+    return csc.tocsr(), debug_info
+
 def generate_year_loss_tables(
     haz: TropCyclone,
     loss_catalogues: dict[str, sp.csr_matrix],
@@ -922,6 +914,8 @@ def generate_year_loss_tables(
     intensity=False,
     damage=False,
     regions: Optional[pd.Series] = None,
+    region_thresholds: dict[str, float] = {},
+    compound_factor = 1.5,
     batch_size=10_000,
     output_dir="Outputs",
     save_large_losses=True,
@@ -929,6 +923,7 @@ def generate_year_loss_tables(
     show_progress=False,
     seed=None,
     save_poisson_debug=False,
+    save_damage_debug=False,
 ) -> str:
     if seed:
         np.random.seed(seed)
@@ -1034,9 +1029,19 @@ def generate_year_loss_tables(
         losses = losses[positive, :]
 
         if damage:
-            losses = increased_losses_from_consecutive_cyclones(batch_year_loss_table, losses)
-
-        batch_year_loss_table["total_loss"] = losses.sum(axis=1)
+            losses, debug_info = boost_losses_sliding_window(
+                batch_year_loss_table,
+                losses,
+                region_names,
+                region_col_map,
+                region_thresholds,
+                compound_factor,
+                debug=save_damage_debug,
+            )
+            if save_damage_debug:
+                # dump all debug arrays as new columns
+                for col_name, arr in debug_info.items():
+                    batch_year_loss_table[col_name] = arr
 
         if regions is not None:
             # Sum loss by region and insert as new columns
@@ -1044,6 +1049,9 @@ def generate_year_loss_tables(
                 cols = region_col_map[region]
                 region_loss = losses[:, cols].sum(axis=1).A1  # Convert to 1D array
                 batch_year_loss_table[f"{region.lower().replace(' ', '_')}_loss"] = region_loss
+
+        batch_year_loss_table["total_loss"] = losses.sum(axis=1)
+
 
         if save_large_losses:
             batch_year_loss_table["larger_losses"] = summarise_large_losses(losses)
