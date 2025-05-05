@@ -30,6 +30,33 @@ ENSO_PHASES = ['Nina', 'Neutral', 'Nino']
 ENSO_TO_IDX = {p: i for i, p in enumerate(ENSO_PHASES)}
 
 
+class JaggedArray:
+    """
+    In the following, we often want to store information about each
+    cyclone event, and have it accessible by simulation number, year, and basin.
+    However, the number of cyclones by sim/year/basin is not constant (it is random).
+    This class is a simple wrapper around a contiguous preallocated array
+    so we can store a jagged array of data and access it by a multi-index. 
+    """
+    def __init__(self, lengths, dtype):
+        self.shape = lengths.shape             # e.g. (n_sim, n_years, n_basins)
+        flat_lengths = np.ascontiguousarray(lengths, int).ravel()
+        self.starts  = np.concatenate(([0], flat_lengths.cumsum()))[:-1]
+        self.lengths = flat_lengths            # 1D array of the same total size
+        self.data    = np.empty(flat_lengths.sum(), dtype)
+
+    def __getitem__(self, idx):
+        i = np.ravel_multi_index(idx, self.shape, order='C')
+        s, l = self.starts[i], self.lengths[i]
+        return self.data[s:s+l]
+
+    def __setitem__(self, idx, v):
+        i = np.ravel_multi_index(idx, self.shape, order='C')
+        s, l = self.starts[i], self.lengths[i]
+        assert l == len(v)
+        self.data[s:s+l] = v
+
+
 def date_to_enso(date: dt.datetime, enso_dict: dict[dt.datetime, str]) -> str:
     """
     Given a date, return the corresponding ENSO phase (Nina, Neutral, or Nino)
@@ -144,21 +171,18 @@ def compute_loss_catalogue(
     output_dir="Outputs",
     filename_base="loss_catalogue",
     save_catalogue=False,
-) -> tuple[dict[str, sp.csr_matrix], dict[int, int]]:
+) -> dict[str, sp.csr_matrix]:
     """
     Compute loss catalogues for all ENSO phases, with and without intensity adjustment.
 
     Returns
     -------
-    loss_catalogues : dict[str, sp.csr_matrix]
-        Dictionary mapping ENSO phase to loss matrix.
-    loss_catalogue_index : dict[int, int]
-        Mapping from event_id to row index in the matrices.
+    dict[str, sp.csr_matrix]
+        Dictionary mapping ENSO phase to sparse loss matrix of shape n_events x n_locations.
     """
     os.makedirs(output_dir, exist_ok=True)
 
     loss_catalogues = {}
-    loss_catalogue_index = {eid: i for i, eid in enumerate(haz.event_id)}
 
     # Average maximum TC intensity by ENSO phase, split by basin
     max_intensity_df = pd.read_csv(
@@ -199,8 +223,7 @@ def compute_loss_catalogue(
 
     haz.intensity = original_intensities
 
-    return loss_catalogues, loss_catalogue_index
-
+    return loss_catalogues
 
 def simulate_enso_time_series(
     n_sim: int,
@@ -310,21 +333,20 @@ def enso_probs(enso_idx: int, p: float) -> npt.NDArray[np.float64]:
     return probs
 
 
-def sample_synthetic_cyclone_ids(
+def sample_synthetic_cyclones(
     n_sim: int,
     basins: list[str],
     haz_basin: npt.NDArray[np.str_],
     haz_enso: npt.NDArray[np.str_],
-    haz_event_id: npt.NDArray[np.int_],
     enso_simulations: npt.NDArray[np.uint8],        # shape (n_sim, n_years)
     event_numbers: npt.NDArray[np.uint8],           # shape (n_sim, n_years, n_basins)
     loc: bool,
     p_loc: float,
     replace=True,
     show_progress=False,
-) -> tuple[npt.NDArray[np.int32], npt.NDArray[np.uint32]]:
+) -> JaggedArray:
     """
-    Sample synthetic cyclone event IDs per simulation/year/basin with or without replacement.
+    Sample synthetic cyclone events per simulation/year/basin with or without replacement.
 
     Parameters
     ----------
@@ -334,30 +356,24 @@ def sample_synthetic_cyclone_ids(
         Basin name for each historical event.
     haz_enso
         ENSO phase for each historical event (e.g. "Nina", "Neutral", "Nino").
-    haz_event_id
-        Event ID for each historical cyclone.
     
     Returns
     -------
-    event_ids_flat : npt.NDArray[np.int32]
-        Flat array of sampled event IDs.
-    index_map : npt.NDArray[np.uint32]
-        Array of shape (n_sim, n_years, n_basins, 2) containing [start_idx, count].
+    JaggedArray[np.uint32]
+        Array of all sampled cyclone indices, indexed by (sim, year, basin)
     """
     n_years = enso_simulations.shape[1]
-    total_events = event_numbers.sum()
+    n_hazs = haz_basin.size
 
-    event_ids_flat = np.empty(total_events, dtype=np.int32)
-    index_map = np.zeros((n_sim, n_years, len(basins), 2), dtype=np.uint32)
+    cyclone_inds = JaggedArray(event_numbers, dtype=np.uint32)
 
     # Pre-index the historical event data
-    event_ids_by_basin = {b: haz_event_id[haz_basin == b] for b in basins}
+    event_inds = np.arange(n_hazs)
+    event_inds_by_basin = {b: event_inds[haz_basin == b] for b in basins}
     enso_by_basin = {b: haz_enso[haz_basin == b] for b in basins}
 
-    current_index = 0
-
-    for sim_idx in trange(n_sim, desc="Sampling synthetic cyclone ids", disable=not show_progress):
-        used_ids : Optional[set[int]] = set() if not replace else None
+    for sim_idx in trange(n_sim, desc="Sampling synthetic cyclone indices", disable=not show_progress):
+        used_inds : Optional[set[int]] = set() if not replace else None
 
         for year_idx in range(n_years):
             enso_idx = enso_simulations[sim_idx, year_idx]
@@ -365,47 +381,41 @@ def sample_synthetic_cyclone_ids(
 
             for b_idx, basin in enumerate(basins):
                 n_events = event_numbers[sim_idx, year_idx, b_idx]
-                index_map[sim_idx, year_idx, b_idx, 0] = current_index
-                index_map[sim_idx, year_idx, b_idx, 1] = n_events
 
-                if n_events == 0:
-                    continue
-
-                all_ids_in_basin = event_ids_by_basin[basin]
+                all_inds_in_basin = event_inds_by_basin[basin]
 
                 if loc:
                     enso_labels = enso_by_basin[basin]
                     sampled_phases = np.random.choice(ENSO_PHASES, size=n_events, p=selection_probs)
                     counts = Counter(sampled_phases)
 
-                    selected_ids : list[int] = []
+                    selected_inds : list[int] = []
                     for phase, count in counts.items():
-                        available = all_ids_in_basin[enso_labels == phase]
+                        available = all_inds_in_basin[enso_labels == phase]
                         if not replace:
-                            available = np.setdiff1d(available, list(used_ids), assume_unique=True)
+                            available = np.setdiff1d(available, list(used_inds), assume_unique=True)
                         
                         if len(available) < count:
                             raise ValueError(f"Not enough events in basin '{basin}' for ENSO phase '{phase}'.")
                         selected = np.random.choice(available, size=count, replace=replace)
-                        selected_ids.extend(selected)
+                        selected_inds.extend(selected)
                         if not replace:
-                            used_ids.update(selected)
+                            used_inds.update(selected)
                 else:
                     if replace:
-                        available = all_ids_in_basin
+                        available = all_inds_in_basin
                     else:
-                        available = np.setdiff1d(all_ids_in_basin, list(used_ids), assume_unique=True)
+                        available = np.setdiff1d(all_inds_in_basin, list(used_inds), assume_unique=True)
                         
                     if len(available) < n_events:
                         raise ValueError(f"Not enough events in basin '{basin}' to sample without replacement.")
-                    selected_ids = np.random.choice(available, size=n_events, replace=replace)
+                    selected_inds = np.random.choice(available, size=n_events, replace=replace)
                     if not replace:
-                        used_ids.update(selected_ids)
+                        used_inds.update(selected_inds)
 
-                event_ids_flat[current_index:current_index + n_events] = selected_ids
-                current_index += n_events
+                cyclone_inds[sim_idx, year_idx, b_idx] = selected_inds
 
-    return event_ids_flat, index_map
+    return cyclone_inds
 
 
 def get_poisson_parameters(haz: TropCyclone, basins: list[str], homogeneous: bool) -> npt.NDArray[np.float64]:
@@ -573,7 +583,7 @@ def simulate_arrival_times_of_cyclones(
     enso_simulations: npt.NDArray[np.uint8],  # shape (n_sim, n_years), int8
     event_numbers: npt.NDArray,     # shape (n_sim, n_years, n_basins), int
     show_progress=False,
-) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.uint32]]:
+) -> JaggedArray:
     """
     Simulate within-season arrival times for tropical cyclones and store in a flat array.
 
@@ -594,22 +604,12 @@ def simulate_arrival_times_of_cyclones(
     
     Returns
     -------
-    arrival_times : npt.NDArray[float32]
-        Flat array of all arrival times.
-    index_map : npt.NDArray[uint32]
-        Array of shape (n_sim, n_years, n_basins, 2) containing:
-        - index_map[..., 0] = start index into arrival_times
-        - index_map[..., 1] = number of events for that (sim, year, basin)
+    JaggedArray[float32]
+        Array of all arrival times, indexed by (sim, year, basin)
     """
-    n_basins = len(basins)
-    total_events = event_numbers.sum()
+    arrival_times = JaggedArray(event_numbers, dtype=np.float32)
     
-    arrival_times = np.empty(total_events, dtype=np.float32)
-    index_map = np.zeros((n_sim, n_years, n_basins, 2), dtype=np.uint32)
-
     max_intensities = maximum_poisson_intensities(poisson_params, basins)
-
-    current_index = 0
 
     for sim_idx in trange(n_sim, desc="Simulating arrival times", disable=not show_progress):
         for year_idx in range(n_years):
@@ -617,29 +617,22 @@ def simulate_arrival_times_of_cyclones(
 
             for basin_idx, basin in enumerate(basins):
                 n_events = event_numbers[sim_idx, year_idx, basin_idx]
-                index_map[sim_idx, year_idx, basin_idx, 0] = current_index
-                index_map[sim_idx, year_idx, basin_idx, 1] = n_events
+                coefs = poisson_params[basin_idx, enso_idx]
+                south_hemis = basin in ['SI', 'SP']
+                times = year_idx + sample_poisson_arrivals(n_events, coefs, south_hemis, max_intensities[basin_idx, enso_idx])
+                times.sort()
 
-                if n_events > 0:
-                    coefs = poisson_params[basin_idx, enso_idx]
-                    south_hemis = basin in ['SI', 'SP']
-                    times = year_idx + sample_poisson_arrivals(n_events, coefs, south_hemis, max_intensities[basin_idx, enso_idx])
-                    times.sort()
-                    arrival_times[current_index:current_index + n_events] = times.astype(np.float32)
-                    current_index += n_events
+                arrival_times[sim_idx, year_idx, basin_idx] = times.astype(np.float32)
 
-    return arrival_times, index_map
+    return arrival_times
 
 
 def create_year_loss_table_for_batch(
     sim_indices: list[int],
     enso_simulations: npt.NDArray[np.uint8],              # shape (n_sim, n_years)
-    number_of_cyclones: npt.NDArray[np.uint8],           # shape (n_sim, n_years, n_basins)
-    cyclone_ids_flat: npt.NDArray[np.int_],              # shape (total_events,)
-    cyclone_ids_index_map: npt.NDArray[np.uint32],       # shape (n_sim, n_years, n_basins, 2)
+    arrival_times: JaggedArray,               # shape (n_sim, n_years, n_basins)
+    cyclone_inds: JaggedArray,                 # shape (n_sim, n_years, n_basins)
     basins: list[str],
-    arrival_times_flat: npt.NDArray[np.float32],
-    arrival_times_index_map: npt.NDArray[np.uint32],     # shape (n_sim, n_years, n_basins, 2)
 ) -> pd.DataFrame:
     """
     Create a tidy DataFrame for a batch of simulation indices.
@@ -650,18 +643,12 @@ def create_year_loss_table_for_batch(
         Indices of simulations to include in this batch.
     enso_simulations
         ENSO phases for all simulations.
-    number_of_cyclones
-        Cyclone counts for all simulations.
-    cyclone_ids_flat
-        Flattened event ID array.
-    cyclone_ids_index_map
-        Index map for locating cyclone IDs.
+    arrival_times
+        The arrival time (np.float32) for each resampled cyclone.
+    cyclone_inds
+        The indices (np.uint32) of the resampled cyclones.
     basins
         Ordered list of basin names.
-    arrival_times_flat
-        Flattened array of arrival times.
-    arrival_times_index_map
-        Index map for locating arrival times.
 
     Returns
     -------
@@ -676,24 +663,18 @@ def create_year_loss_table_for_batch(
             enso_phase = ENSO_PHASES[enso_simulations[sim_idx, year_idx]]
 
             for basin_idx, basin in enumerate(basins):
-                count = number_of_cyclones[sim_idx, year_idx, basin_idx]
-                if count == 0:
-                    continue
+                times = arrival_times[sim_idx, year_idx, basin_idx]
+                inds = cyclone_inds[sim_idx, year_idx, basin_idx]
 
-                start, n = cyclone_ids_index_map[sim_idx, year_idx, basin_idx]
-                ids = cyclone_ids_flat[start:start + n]
+                assert len(times) == len(inds), "Mismatch in arrival time and event index counts"
 
-                time_start, time_n = arrival_times_index_map[sim_idx, year_idx, basin_idx]
-                assert time_n == n, "Mismatch in arrival time and event ID counts"
-                times = arrival_times_flat[time_start:time_start + time_n]
-
-                for i in range(n):
+                for time_i, ind_i in zip(times, inds):
                     record = {
                         "simulation": sim_idx + 1,
                         "year": year_idx + 1,
-                        "event_time": times[i],
+                        "event_time": time_i,
                         "basin": basin,
-                        "event_id": ids[i],
+                        "event_ind": ind_i,
                         "enso_phase": enso_phase,
                     }
                     records.append(record)
@@ -904,7 +885,6 @@ def boost_losses_sliding_window(
 def generate_year_loss_tables(
     haz: TropCyclone,
     loss_catalogues: dict[str, sp.csr_matrix],
-    loss_catalogue_index: dict[int, int],
     homogeneous: bool,
     n_sim: int,
     n_years: int,
@@ -954,7 +934,7 @@ def generate_year_loss_tables(
         )
         
     print(f"{base_filename}: 3/5) Simulating arrival times of cyclones", flush=True)
-    arrival_times_flat, arrival_times_index_map = simulate_arrival_times_of_cyclones(
+    arrival_times = simulate_arrival_times_of_cyclones(
         n_sim,
         n_years,
         poisson_params,
@@ -964,18 +944,16 @@ def generate_year_loss_tables(
         show_progress
     )
 
-    print(f"{base_filename}: 4/5) Sampling synthetic cyclone IDs", flush=True)
+    print(f"{base_filename}: 4/5) Sampling synthetic cyclone indices", flush=True)
 
     haz_basin = np.array(haz.basin)
-    haz_event_id = np.array(haz.event_id)
     haz_enso: npt.NDArray[np.str_] = enso_phases_of_historical_tracks(haz)
 
-    cyclone_ids_flat, cyclone_ids_index_map = sample_synthetic_cyclone_ids(
+    cyclone_inds = sample_synthetic_cyclones(
         n_sim,
         basins,
         haz_basin,
         haz_enso,
-        haz_event_id,
         enso_simulations,
         number_of_cyclones,
         loc,
@@ -999,12 +977,9 @@ def generate_year_loss_tables(
         batch_year_loss_table = create_year_loss_table_for_batch(
             sim_indices=sim_indices,
             enso_simulations=enso_simulations,
-            number_of_cyclones=number_of_cyclones,
-            cyclone_ids_flat=cyclone_ids_flat,
-            cyclone_ids_index_map=cyclone_ids_index_map,
+            arrival_times=arrival_times,
+            cyclone_inds=cyclone_inds,
             basins=basins,
-            arrival_times_flat=arrival_times_flat,
-            arrival_times_index_map=arrival_times_index_map
         )
 
         if batch_year_loss_table.empty:
@@ -1013,15 +988,12 @@ def generate_year_loss_tables(
         # Compute losses
         if intensity:
             enso_phases = batch_year_loss_table["enso_phase"].values
-            row_list = []
-            for eid, phase in zip(batch_year_loss_table.event_id, enso_phases):
-                row_idx = loss_catalogue_index[eid]
-                row = loss_catalogues[phase].getrow(row_idx)
-                row_list.append(row)
-            losses = sp.vstack(row_list, format="csr")
+            losses = []
+            for eind, phase in zip(batch_year_loss_table.event_ind, enso_phases):
+                losses.append(loss_catalogues[phase].getrow(eind))
+            losses = sp.vstack(losses, format="csr")
         else:
-            rows = [loss_catalogue_index[eid] for eid in batch_year_loss_table.event_id]
-            losses = loss_catalogues["No adjustment"][rows]
+            losses = loss_catalogues["No adjustment"][list(batch_year_loss_table.event_ind)]
         
         # Only keep the rows which have a positive loss
         positive = np.array((losses.sum(axis=1) > 0)).ravel()
@@ -1068,7 +1040,7 @@ def generate_year_loss_tables(
     df['year'] = df['year'].astype(np.uint32)
     df['simulation'] = df['simulation'].astype(np.uint32)
     df['event_time'] = df['event_time'].astype(np.float32)
-    df['event_id'] = df['event_id'].astype(np.int32)
+    df['event_ind'] = df['event_ind'].astype(np.uint32)
     df['total_loss'] = df['total_loss'].astype(np.float32)
     df['enso_phase'] = df['enso_phase'].astype("category")
     df['basin'] = df['basin'].astype("category")
