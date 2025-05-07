@@ -42,16 +42,10 @@ This folder holds all files necessary to generate catastrophe losses under numer
 * `TCSurge.ipynb`: Python notebook that analyses CLIMADA's "petals" class `TCSurgeBathtub` for modelling storm surge.
 
 ## CLIMADA
+
 **You must first install CLIMADA before using this code (CLIMADA petals not necessary). Instructions on installation are [here](https://climada-python.readthedocs.io/en/stable/guide/install.html).**
 Documentation on CLIMADA can be found [here](https://climada-python.readthedocs.io/en/stable/index.html). 
 
-After installing, it will require an extra couple of data files to be manually downloaded:
-
-- [gpw_v4_population_count_rev11_2020_30_sec.tif](http://sedac.ciesin.columbia.edu/downloads/data/gpw-v4/gpw-v4-population-count-rev11/gpw-v4-population-count-rev11_2020_30_sec_tif.zip) (Free NASA Earthdata login required),
-- The Australian [States and Territories - 2021 - Shapefile](https://www.abs.gov.au/statistics/standards/australian-statistical-geography-standard-asgs-edition-3/jul2021-jun2026/access-and-downloads/digital-boundary-files/STE_2021_AUST_SHP_GDA2020.zip)
-
-Other files will download automatically the first time the code is run.
-In case they change versions in the future, we take note of them here:
-
-- IBTrACS.ALL.v04r01.nc
-- https://naturalearth.s3.amazonaws.com/10m_physical/ne_10m_coastline.zip
+After installing, you will also need to manually download the dataset [gpw_v4_population_count_rev11_2020_30_sec.tif](http://sedac.ciesin.columbia.edu/downloads/data/gpw-v4/gpw-v4-population-count-rev11/gpw-v4-population-count-rev11_2020_30_sec_tif.zip) and place it in `~/climada/data`.
+A free NASA Earthdata login is required.
+CLIMADA will download `IBTrACS.ALL.v04r01.nc` to the same directory when the hazard generation code is first run (we take note of the dataset version here for the purpose of reproducibility).
