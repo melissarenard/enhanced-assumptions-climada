@@ -439,9 +439,7 @@ def get_poisson_parameters(haz: TropCyclone, basins: list[str], homogeneous: boo
 
     # However, not all cyclones hit Australia, so we scale the parameters
     # by the proportion of cyclones that hit Australia.
-    aus_cyclones = haz.select(orig=True)
-    aus_cyclone_basins = np.array(aus_cyclones.basin)
-
+    aus_cyclone_basins = np.array(haz.basin)[haz.orig]
     n_tracks_CLIMADA = pd.read_csv('R tables/n_tracks_CLIMADA.csv')
 
     for b, basin in enumerate(basins):
