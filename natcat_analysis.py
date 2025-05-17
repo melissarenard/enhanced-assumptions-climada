@@ -31,6 +31,25 @@ def read_losses(
 
     return loss_per_sim
 
+def read_cyclone_counts(
+        homogeneous: bool,
+        n_years: int,
+        loc: bool = False,
+        p_loc: float = 0.5,
+        intensity: bool = False,
+        damage: bool = False,
+        n_sim: int = 1_000_000,
+        dir: str = "Outputs",
+):
+    
+    cyclones_df  = pd.read_csv(
+        f"{dir}/{homogeneous}_{n_sim}_{n_years}_{loc}_{p_loc}_{intensity}_{damage}_cyclone_counts.csv"
+    )
+
+    cyclone_count_per_sim = np.array(cyclones_df.filter(like = "Number of cyclones").sum(1))
+
+    return cyclone_count_per_sim
+
 
 def plot_return_period_curves(
     losses_per_sim: list, legend_labels: dict, n_sim=1_000_000, rp=250
