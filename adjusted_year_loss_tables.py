@@ -225,6 +225,30 @@ def compute_loss_catalogue(
 
     return loss_catalogues
 
+def compute_2023_loss_catalogue(
+    haz: TropCyclone,
+    exp: LitPop,
+    impfset: ImpactFuncSet,
+    output_dir="Outputs",
+    filename_base="loss_catalogue",
+    save_catalogue=False,
+) -> dict[str, sp.csr_matrix]:
+    """
+    Compute loss catalogues for all ENSO phases, with and without intensity adjustment.
+
+    Returns
+    -------
+    dict[str, sp.csr_matrix]
+        Dictionary mapping ENSO phase to sparse loss matrix of shape n_events x n_locations.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    loss_catalogue = ImpactCalc(exp, impfset, haz).impact(assign_centroids=False).imp_mat
+    if save_catalogue:
+        sp.save_npz(os.path.join(output_dir, f"{filename_base}_2023.npz"), loss_catalogue)
+
+    return loss_catalogue
+
 def simulate_enso_time_series(
     n_sim: int,
     n_years: int,
