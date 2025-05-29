@@ -225,29 +225,31 @@ def compute_loss_catalogue(
 
     return loss_catalogues
 
-def compute_2023_loss_catalogue(
+def previous_year_observed_losses(
     haz: TropCyclone,
-    exp: LitPop,
-    impfset: ImpactFuncSet,
-    output_dir="Outputs",
-    filename_base="loss_catalogue",
-    save_catalogue=False,
-) -> dict[str, sp.csr_matrix]:
+    synthetic_start_year: int,
+    loss_catalogue: sp.csr_matrix,
+    ) -> tuple[sp.csr_matrix, npt.NDArray[np.float64]]:
     """
-    Compute loss catalogues for all ENSO phases, with and without intensity adjustment.
-
-    Returns
-    -------
-    dict[str, sp.csr_matrix]
-        Dictionary mapping ENSO phase to sparse loss matrix of shape n_events x n_locations.
+    Compute the loss catalogue for the previous year, using the historical hazard data.
+    This is used to for the consecutive loss adjustment during the first synthetic year.
     """
-    os.makedirs(output_dir, exist_ok=True)
+    start = dt.date.toordinal(dt.date(synthetic_start_year-1, 1, 1))
+    end = dt.date.toordinal(dt.date(synthetic_start_year, 1, 1))
+    mask = (start <= haz.date) & (haz.date < end) & haz.orig
+    previous_losses = loss_catalogue[mask, :].copy().tocsr()
 
-    loss_catalogue = ImpactCalc(exp, impfset, haz).impact(assign_centroids=False).imp_mat
-    if save_catalogue:
-        sp.save_npz(os.path.join(output_dir, f"{filename_base}_2023.npz"), loss_catalogue)
+    # Also get the dates of the previous year events, and convert them.
+    # Make Jan 1 of the previous year become -1 and Jan 1 of this year be 0.
+    previous_times = (haz.date[mask] - start) / (end - start)  # Normalize to [0, 1)
+    previous_times -= 1  # Shift to [-1, 0)
 
-    return loss_catalogue
+    # Sort the losses and times by the event time
+    order = np.argsort(previous_times)
+    previous_losses = previous_losses[order, :]
+    previous_times = previous_times[order]
+
+    return previous_losses, previous_times
 
 def simulate_enso_time_series(
     n_sim: int,
@@ -655,6 +657,7 @@ def create_year_loss_table_for_batch(
     arrival_times: JaggedArray,               # shape (n_sim, n_years, n_basins)
     cyclone_inds: JaggedArray,                 # shape (n_sim, n_years, n_basins)
     basins: list[str],
+    synthetic_start_year: int,
 ) -> pd.DataFrame:
     """
     Create a tidy DataFrame for a batch of simulation indices.
@@ -691,10 +694,15 @@ def create_year_loss_table_for_batch(
                 assert len(times) == len(inds), "Mismatch in arrival time and event index counts"
 
                 for time_i, ind_i in zip(times, inds):
+                    # Convert the time_i to a proper date
+                    year = year_idx + synthetic_start_year
+                    date_i = dt.date(year, 1, 1) + dt.timedelta(days=int(time_i * 365.25))  # Approximate leap years
+
                     record = {
                         "simulation": sim_idx + 1,
                         "year": year_idx + 1,
                         "event_time": time_i,
+                        "event_date": date_i,
                         "basin": basin,
                         "event_ind": ind_i,
                         "enso_phase": enso_phase,
@@ -824,6 +832,8 @@ def save_number_of_cyclones(
 
 def boost_losses_sliding_window(
     batch_df: pd.DataFrame,
+    previous_losses: sp.csr_matrix,
+    previous_times: npt.NDArray[np.float64],
     losses: sp.csr_matrix,
     region_names: list[str],
     region_col_map: dict[str, np.ndarray],
@@ -835,70 +845,92 @@ def boost_losses_sliding_window(
     Computes raw per-region losses internally, then does the sliding-window compounding.
     Returns the boosted loss matrix, plus debug arrays if requested.
     """
-    # 1) sort events
+    # 1) sort synthetic events
     batch_df = batch_df.reset_index(drop=True)
     order = batch_df.sort_values(['simulation','event_time']).index.to_numpy()
     inv_order = np.empty_like(order); inv_order[order] = np.arange(len(order))
     times = batch_df.loc[order, 'event_time'].to_numpy()
     sims  = batch_df.loc[order, 'simulation'].to_numpy()
-    n     = len(order)
+    n_synth = len(order)
 
-    # 2) compute raw per-region losses from the sparse matrix
-    raw_vals = {}
+    # 2) raw per-region losses for synthetic events (in sorted order)
+    raw_synth = {}
     for r in region_names:
         cols = region_col_map[r]
-        arr = losses[:, cols].sum(axis=1).A1   # shape (n_events,)
-        raw_vals[r] = arr[order]              # align to sorted order
+        arr = losses[:, cols].sum(axis=1).A1      # shape (n_syn_events,)
+        raw_synth[r] = arr[order]                   # now aligned with sorted ‘times’
 
-    # 3) prepare CSC copy
+    # 3) raw per-region losses for prior-year events (they are sorted beforehand)
+    prev_raw = {}
+    for r in region_names:
+        cols = region_col_map[r]
+        prev_raw[r] = previous_losses[:, cols].sum(axis=1).A1
+
+    # sort the prior events by their time
+    prev_idx = np.argsort(previous_times)
+    prev_times_sorted = previous_times[prev_idx]
+    for r in region_names:
+        prev_raw[r] = prev_raw[r][prev_idx]
+
+    # 4) prepare CSC copy of the *synthetic* loss matrix for in-place boosting
     csc = losses.tocsc(copy=True)
 
-    # 4) allocate state + debug
+    # 5) allocate sliding‐window state
     window_sums = {r: 0.0 for r in region_names}
-    boost_mult  = {r: np.ones(n, dtype=float) for r in region_names}
-    prev_vals   = {r: np.zeros(n, dtype=float) for r in region_names}
+    boost_mult  = {r: np.ones(n_synth, dtype=float) for r in region_names}
+    prev_vals   = {r: np.zeros(n_synth, dtype=float) for r in region_names}
 
-    # 5) sliding window per simulation
+    # 6) run sliding window, per simulation
     for sim in np.unique(sims):
-        idxs = np.where(sims == sim)[0]
-        head = 0
+        idxs      = np.where(sims == sim)[0]
+        head_synth  = 0
+        head_prev = 0
+
+        # start with *all* prior losses in the window
         for r in region_names:
-            window_sums[r] = 0.0
+            window_sums[r] = prev_raw[r].sum()
 
         for i_local, tail in enumerate(idxs):
             t = times[tail]
-            # evict anything < t-1
-            while head < i_local and times[idxs[head]] < t - 1.0:
-                ev = idxs[head]
-                for r in region_names:
-                    window_sums[r] -= boost_mult[r][ev] * raw_vals[r][head]
-                head += 1
 
-            # record & decide boost
+            # a) evict any prior events older than t−1
+            while head_prev < len(prev_times_sorted) and prev_times_sorted[head_prev] < t - 1.0:
+                for r in region_names:
+                    window_sums[r] -= prev_raw[r][head_prev]
+                head_prev += 1
+
+            # b) evict any *synthetic* events older than t−1
+            while head_synth < i_local and times[idxs[head_synth]] < t - 1.0:
+                ev = idxs[head_synth]
+                for r in region_names:
+                    window_sums[r] -= boost_mult[r][ev] * raw_synth[r][head_synth]
+                head_synth += 1
+
+            # c) record & decide boost for this event
             for r in region_names:
                 prev_vals[r][tail] = window_sums[r]
                 if window_sums[r] > region_thresholds[r]:
                     boost_mult[r][tail] = compound_factor
 
-            # add this event’s FINAL loss
+            # d) add this event’s *boosted* loss into the window
             for r in region_names:
-                window_sums[r] += boost_mult[r][tail] * raw_vals[r][tail]
+                window_sums[r] += boost_mult[r][tail] * raw_synth[r][tail]
 
-    # 6) apply boost to the CSC matrix
+    # 7) apply the boosts into your CSC matrix of *synthetic* losses
     for r in region_names:
         mult = boost_mult[r][inv_order]
         for col in region_col_map[r]:
-            start,end = csc.indptr[col], csc.indptr[col+1]
-            for ptr in range(start,end):
+            start, end = csc.indptr[col], csc.indptr[col+1]
+            for ptr in range(start, end):
                 row = int(csc.indices[ptr])
                 csc.data[ptr] *= mult[row]
 
-    # 7) debug info
-    debug_info = {}
+    # 8) package debug info if requested
+    debug_info: dict[str, np.ndarray] = {}
     if debug:
         for r in region_names:
-            key = r.lower().replace(' ','_')
-            debug_info[f"{key}_raw_loss"]      = raw_vals[r][inv_order]
+            key = r.lower().replace(' ', '_')
+            debug_info[f"{key}_raw_loss"]      = raw_synth[r][inv_order]
             debug_info[f"{key}_prev_win_loss"] = prev_vals[r][inv_order]
             debug_info[f"{key}_boosted"]       = (boost_mult[r][inv_order] != 1.0).astype(int)
 
@@ -915,6 +947,7 @@ def generate_year_loss_tables(
     p_loc=0.5,
     intensity=False,
     damage=False,
+    synthetic_start_year=2024,
     regions: Optional[pd.Series] = None,
     region_thresholds: dict[str, float] = {},
     compound_factor = 1.5,
@@ -932,6 +965,9 @@ def generate_year_loss_tables(
 
     os.makedirs(output_dir, exist_ok=True)
     base_filename = f"{homogeneous}_{n_sim}_{n_years}_{loc}_{p_loc}_{intensity}_{damage}"
+
+    if damage:
+        previous_losses, previous_times = previous_year_observed_losses(haz, synthetic_start_year, loss_catalogues["No adjustment"])
 
     print(f"{base_filename}: 1/5) Simulating ENSO time series", flush=True)
     enso_simulations: npt.NDArray[np.uint8] = simulate_enso_time_series(
@@ -1002,6 +1038,7 @@ def generate_year_loss_tables(
             arrival_times=arrival_times,
             cyclone_inds=cyclone_inds,
             basins=basins,
+            synthetic_start_year=synthetic_start_year,
         )
 
         if batch_year_loss_table.empty:
@@ -1025,6 +1062,8 @@ def generate_year_loss_tables(
         if damage:
             losses, debug_info = boost_losses_sliding_window(
                 batch_year_loss_table,
+                previous_losses,
+                previous_times,
                 losses,
                 region_names,
                 region_col_map,
