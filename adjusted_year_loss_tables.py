@@ -234,13 +234,13 @@ def previous_year_observed_losses(
     Compute the loss catalogue for the previous year, using the historical hazard data.
     This is used to for the consecutive loss adjustment during the first synthetic year.
     """
-    start = dt.date.toordinal(dt.date(synthetic_start_year-1, 1, 1))
-    end = dt.date.toordinal(dt.date(synthetic_start_year, 1, 1))
+    start = dt.date.toordinal(dt.date(synthetic_start_year-2, 8, 1))
+    end = dt.date.toordinal(dt.date(synthetic_start_year-1, 8, 1))
     mask = (start <= haz.date) & (haz.date < end) & haz.orig
     previous_losses = loss_catalogue[mask, :].copy().tocsr()
 
     # Also get the dates of the previous year events, and convert them.
-    # Make Jan 1 of the previous year become -1 and Jan 1 of this year be 0.
+    # Make Aug 1 of the previous year become -1 and Aug 1 of this year be 0.
     previous_times = (haz.date[mask] - start) / (end - start)  # Normalize to [0, 1)
     previous_times -= 1  # Shift to [-1, 0)
 
@@ -696,7 +696,7 @@ def create_year_loss_table_for_batch(
                 for time_i, ind_i in zip(times, inds):
                     # Convert the time_i to a proper date
                     year = year_idx + synthetic_start_year
-                    date_i = dt.date(year, 1, 1) + dt.timedelta(days=int(time_i * 365.25))  # Approximate leap years
+                    date_i = dt.date(year-1, 8, 1) + dt.timedelta(days=int(time_i * 365.25))  # Approximate leap years
 
                     record = {
                         "simulation": sim_idx + 1,
@@ -942,7 +942,7 @@ def generate_year_loss_tables(
     homogeneous: bool,
     n_sim: int,
     n_years: int,
-    starting_enso="Nino",
+    starting_enso="Nina",
     loc=False,
     p_loc=0.5,
     intensity=False,
