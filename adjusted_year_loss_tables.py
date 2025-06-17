@@ -696,7 +696,7 @@ def create_year_loss_table_for_batch(
                 for time_i, ind_i in zip(times, inds):
                     # Convert the time_i to a proper date
                     year = year_idx + synthetic_start_year
-                    date_i = dt.date(year-1, 8, 1) + dt.timedelta(days=int(time_i * 365.25))  # Approximate leap years
+                    date_i = dt.date(synthetic_start_year-1, 8, 1) + dt.timedelta(days=int(time_i * 365.25))  # Approximate leap years
 
                     record = {
                         "simulation": sim_idx + 1,
