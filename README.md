@@ -11,10 +11,10 @@ This folder holds all files necessary to generate catastrophe losses under numer
 ## Instructions
 1. Run `Hazard generation.ipynb`
 2. Run `Generate Year Loss Tables.ipynb`
-3. Optional: In your own python file, import `natcat_analysis.py` and call relevant functions to obtain summary statistics/plots of results.
+3. Optional: Use `Analayse YLTs.ipynb` to import `natcat_analysis.py` and call relevant functions to obtain summary statistics/plots of results.
 
 * After Step 1, the hazard file will be added to the `Hazards` folder.
-* After step 2, loss output files will be added to the `Outputs` folder. 
+* After Step 2, loss output files will be added to the `Outputs` folder. 
 
 ## Files
 ### Data
